@@ -64,15 +64,20 @@ One Forge app, one `jira:dashboardGadget` module (view + edit) and a resolver.
 
 | File | Responsibility |
 |---|---|
-| `src/resolvers/index.js` | Reads the source filter's JQL, paginates `POST /rest/api/3/search/jql`, returns one record per qualifying issue. Auth `asUser()`. |
+| `src/resolvers/index.js` | Reads the source filter's JQL, paginates `POST /rest/api/3/search/jql`, returns one record per qualifying issue. Auth `asApp()`. |
 | `src/compute.js` | Pure, testable logic: `extractRecords()` (per-issue Wait/Execution/Total) and `aggregate()` (group + median/average + overall). No Forge/network deps. |
 | `src/constants.js` | Config model, selectable groupings/statistics, and shared pure helpers (`slaElapsedMillis`, `formatDuration`, `requestTypeName`). |
 | `src/frontend/index.jsx` | UI Kit **View** (grouping selector + table) and **Edit** (config form). |
 
 Design notes:
 
-- **Auth `asUser()`** — the gadget only ever sees issues the viewing user can
-  already access. The single scope is **`read:jira-work`**. **No external egress.**
+- **Auth `asApp()`** — Jira reads use the app's own credentials so the panel
+  renders for any dashboard viewer without a per-user "grant access" consent
+  prompt. (As a viewed leadership gadget, viewer-scoped `asUser()` would force
+  each person through that prompt.) Data is therefore app-scoped: a viewer sees
+  the aggregated team metrics regardless of their own Jira permissions — intended
+  here, since the source is a curated shared filter of non-sensitive team
+  metrics. The single scope is **`read:jira-work`**. **No external egress.**
 - The resolver does the expensive Jira fetch once; **switching the grouping
   selector re-aggregates client-side** (no refetch).
 - `search/jql` is paginated via `nextPageToken`, with a safety page cap.

@@ -5,6 +5,15 @@ import { extractRecords } from '../compute.js';
 
 const resolver = new Resolver();
 
+// Auth model: Jira reads use api.asApp() (the app's own credentials), NOT
+// asUser(). This is a dashboard gadget that leadership *views* — asUser() would
+// force every viewer through a per-user "grant access on your behalf" consent
+// prompt, which is friction and often fails for non-operators. asApp() makes the
+// panel render for anyone who can see the dashboard. Trade-off: data is app-
+// scoped, so a viewer sees the aggregated team metrics regardless of their own
+// Jira permissions — intended for these non-sensitive team metrics sourced from
+// a curated shared filter.
+
 // All site-specific values come from Forge environment variables (set via
 // scripts/forge-env.sh from your local .env), so nothing is hardcoded here — the
 // app stays portable across sites. The two SLA fields and the request-type field
@@ -35,7 +44,7 @@ async function resolveJql(filterId) {
   if (filterId) {
     try {
       const res = await api
-        .asUser()
+        .asApp()
         .requestJira(route`/rest/api/3/filter/${filterId}`, {
           headers: { Accept: 'application/json' },
         });
@@ -75,7 +84,7 @@ async function fetchAllIssues(jql) {
     if (nextPageToken) body.nextPageToken = nextPageToken;
 
     const res = await api
-      .asUser()
+      .asApp()
       .requestJira(route`/rest/api/3/search/jql`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },

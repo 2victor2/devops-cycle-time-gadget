@@ -39,7 +39,8 @@ patterns. Use a **new** `APP_ID` (`forge register`) — this is a separate app.
 - Group by `assignee | priority | request type` (selectable). Population =
   resolved last 60d with SLA completed cycles (3 `[System]` types); skip those
   without completed cycles.
-- Auth **`asUser()`**; scope **`read:jira-work`** only; **no external egress**;
+- Auth **`asApp()`** (so the viewed dashboard panel renders for any leadership
+  viewer without a per-user consent prompt); scope **`read:jira-work`** only; **no external egress**;
   paginate `search/jql` via `nextPageToken`.
 
 ## Guardrails
