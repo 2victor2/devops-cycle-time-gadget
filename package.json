@@ -1,0 +1,26 @@
+{
+  "name": "devops-cycle-time-gadget",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "GPL-3.0-or-later",
+  "private": true,
+  "scripts": {
+    "lint": "eslint src/**/* || npm run --silent hook-errors",
+    "hook-errors": "echo '\\x1b[31mThe build failed because a Forge UI hook is being used incorrectly. Forge UI hooks follow the same rules as React Hooks but have their own API definitions. See the Forge documentation for details on how to use Forge UI hooks.\n' && exit 1",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "eslint": "^8.56.0",
+    "eslint-plugin-react-hooks": "^4.6.0"
+  },
+  "overrides": {
+    "@compiled/react": "0.20.0"
+  },
+  "dependencies": {
+    "@forge/api": "7.2.1",
+    "@forge/bridge": "5.16.2",
+    "@forge/react": "11.16.1",
+    "@forge/resolver": "1.8.0",
+    "react": "^18.2.0"
+  }
+}

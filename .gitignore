@@ -1,0 +1,25 @@
+# Secrets — never commit (Atlassian/Forge tokens, etc.)
+.env
+.env.*
+!.env.example
+*.pem
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+dist/
+build/
+
+# Forge
+.forge/
+forge-debug.log
+forge-tunnel.log
+manifest.local.yml
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp

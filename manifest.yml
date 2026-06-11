@@ -1,0 +1,37 @@
+modules:
+  jira:dashboardGadget:
+    - key: devops-cycle-time-gadget
+      title: Cycle Time (SLA)
+      description: >-
+        Time from ready to resolved per assignee / priority / request type,
+        split into Wait (First Response SLA) and Execution (Time to Resolution
+        SLA) plus their Total — median and average, from a Jira filter.
+      thumbnail: https://developer.atlassian.com/platform/forge/images/icons/issue-panel-icon.svg
+      resource: main-resource
+      render: native
+      resolver:
+        function: resolver
+      edit:
+        resource: main-resource
+        render: native
+  function:
+    - key: resolver
+      handler: index.handler
+resources:
+  - key: main-resource
+    path: src/frontend/index.jsx
+permissions:
+  scopes:
+    - read:jira-work
+app:
+  runtime:
+    name: nodejs24.x
+    memoryMB: 256
+    architecture: arm64
+  # The real app id is injected from the APP_ID env var at deploy time (see
+  # .env.example / scripts/forge-env.sh). Keeps the repo free of a hardcoded id.
+  id: ${APP_ID}
+environment:
+  variables:
+    - key: APP_ID
+      default: ari:cloud:ecosystem::app/00000000-0000-0000-0000-000000000000
