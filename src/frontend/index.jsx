@@ -27,9 +27,11 @@ import { invoke, view } from '@forge/bridge';
 import {
   GROUPINGS,
   STATISTICS,
+  VIEWS,
   defaultFlatConfig,
   normalizeConfig,
   formatDuration,
+  formatRate,
 } from '../constants.js';
 import { aggregate } from '../compute.js';
 
@@ -118,13 +120,116 @@ const CycleTable = ({ result, statistic, groupHeader }) => {
   );
 };
 
+// ---------------------------------------------------------------------------
+// COMPLIANCE VIEW — per group, a met-vs-breached bar + breach rate per SLA
+// ---------------------------------------------------------------------------
+
+// A proportional met (green) vs breached (red) bar for one SLA, with the raw
+// "met/total" count beside it. Built without flex (xcss has no display:flex): a
+// red container with a single green Box overlaid from the left at the met share,
+// so the remaining red reads as breached. No completed cycles → a muted dash (not
+// an empty bar), so "no data" reads differently from "all met". The split uses the
+// same rounded breach % the rate lozenge shows, so bar and number always agree.
+const ComplianceBar = ({ stat }) => {
+  const total = stat.cycles;
+  if (!total) return <Text color="color.text.subtlest">—</Text>;
+  const breachedPct = Math.round((stat.breached / total) * 100);
+  const metPct = 100 - breachedPct;
+  return (
+    <Inline space="space.100" alignBlock="center">
+      <Box
+        xcss={{
+          width: '110px',
+          height: '12px',
+          borderRadius: 'border.radius.100',
+          overflow: 'hidden',
+          backgroundColor: 'color.background.danger.bold',
+        }}
+      >
+        <Box
+          xcss={{
+            width: `${metPct}%`,
+            height: '12px',
+            backgroundColor: 'color.background.success.bold',
+          }}
+        />
+      </Box>
+      <Text size="small" color="color.text.subtlest">
+        {stat.met}/{total}
+      </Text>
+    </Inline>
+  );
+};
+
+// Breach rate as a lozenge: success (green) when nothing breached, removed (red)
+// when any cycle breached; a muted dash when there were no cycles to rate.
+const RateLozenge = ({ stat }) => {
+  if (!stat.cycles) return <Text color="color.text.subtlest">—</Text>;
+  return (
+    <Lozenge appearance={stat.breached > 0 ? 'removed' : 'success'}>
+      {formatRate(stat.breached, stat.cycles)}
+    </Lozenge>
+  );
+};
+
+const ComplianceTable = ({ result, groupHeader }) => {
+  const head = {
+    cells: [
+      { key: 'label', content: groupHeader, isSortable: true },
+      { key: 'fr', content: 'First Response (met/total)' },
+      { key: 'frRate', content: 'FR breach %', isSortable: true },
+      { key: 'ttr', content: 'Time to Resolution (met/total)' },
+      { key: 'ttrRate', content: 'TTR breach %', isSortable: true },
+    ],
+  };
+
+  // DynamicTable sorts by each cell's `key` (not its content), so the bar/lozenge
+  // cells carry their numeric rate as the key to sort by breach proportion. The
+  // label key is the label string so that column sorts alphabetically.
+  const dataRow = (r, bold = false) => {
+    const fr = r.compliance.firstResponse;
+    const ttr = r.compliance.resolution;
+    const label = bold ? <Strong>{r.label}</Strong> : r.label;
+    return {
+      key: r.key,
+      cells: [
+        { key: r.label, content: label },
+        { key: fr.rate, content: <ComplianceBar stat={fr} /> },
+        { key: fr.rate, content: <RateLozenge stat={fr} /> },
+        { key: ttr.rate, content: <ComplianceBar stat={ttr} /> },
+        { key: ttr.rate, content: <RateLozenge stat={ttr} /> },
+      ],
+    };
+  };
+
+  // Default order for the compliance view = worst resolution breach rate first
+  // (then most cycles), since aggregate() sorts by duration, which is irrelevant
+  // here. Viewers can re-sort any column. Team-overall stays pinned on top.
+  const sortedRows = [...result.rows].sort(
+    (a, b) =>
+      b.compliance.resolution.rate - a.compliance.resolution.rate ||
+      b.compliance.resolution.cycles - a.compliance.resolution.cycles,
+  );
+
+  return (
+    <DynamicTable
+      head={head}
+      rows={[dataRow(result.overall, true), ...sortedRows.map((r) => dataRow(r))]}
+      rowsPerPage={result.rows.length > 12 ? 12 : undefined}
+      emptyView="No resolved issues with SLA data in this window."
+    />
+  );
+};
+
 const View = () => {
   const config = useConfig() || {};
   const cfg = normalizeConfig(config);
   const [state, setState] = useState({ loading: true });
-  // The grouping selector starts at the configured default but is then driven
-  // locally — switching it re-aggregates the already-fetched records instantly.
+  // The grouping/metric selectors start at the configured defaults but are then
+  // driven locally — switching either re-renders from the already-fetched records
+  // instantly (compliance + durations are both precomputed by aggregate()).
   const [dimension, setDimension] = useState(cfg.grouping);
+  const [metric, setMetric] = useState(cfg.metric);
 
   // Re-fetch only when the saved config changes (filter/window affect the query).
   // The grouping/statistic are applied client-side, so they don't refetch.
@@ -134,6 +239,7 @@ const View = () => {
     let active = true;
     setState({ loading: true });
     setDimension(cfg.grouping);
+    setMetric(cfg.metric);
     invoke('getCycleTime', { config })
       .then((res) => active && setState({ loading: false, res }))
       .catch(
@@ -157,6 +263,9 @@ const View = () => {
   const groupOptions = GROUPINGS.map((g) => ({ label: g.label, value: g.key }));
   const selectedOption =
     groupOptions.find((o) => o.value === dimension) || groupOptions[0];
+
+  const viewOptions = VIEWS.map((v) => ({ label: v.label, value: v.key }));
+  const selectedView = viewOptions.find((o) => o.value === metric) || viewOptions[0];
 
   return (
     <Stack space="space.200">
@@ -185,31 +294,58 @@ const View = () => {
 
       {!loading && result && res.records.length > 0 && (
         <Stack space="space.150">
-          <Inline space="space.100" alignBlock="center" spread="space-between">
-            <Box xcss={{ minWidth: '220px' }}>
-              <Label labelFor="grouping-select">Group by</Label>
-              <Select
-                id="grouping-select"
-                appearance="default"
-                spacing="compact"
-                options={groupOptions}
-                value={selectedOption}
-                onChange={(opt) => opt && setDimension(opt.value)}
-              />
-            </Box>
+          <Inline space="space.200" alignBlock="end" spread="space-between">
+            <Inline space="space.150" alignBlock="end">
+              <Box xcss={{ minWidth: '200px' }}>
+                <Label labelFor="metric-select">View</Label>
+                <Select
+                  id="metric-select"
+                  appearance="default"
+                  spacing="compact"
+                  options={viewOptions}
+                  value={selectedView}
+                  onChange={(opt) => opt && setMetric(opt.value)}
+                />
+              </Box>
+              <Box xcss={{ minWidth: '200px' }}>
+                <Label labelFor="grouping-select">Group by</Label>
+                <Select
+                  id="grouping-select"
+                  appearance="default"
+                  spacing="compact"
+                  options={groupOptions}
+                  value={selectedOption}
+                  onChange={(opt) => opt && setDimension(opt.value)}
+                />
+              </Box>
+            </Inline>
             <Lozenge appearance="inprogress">
               {result.overall.n} issues · {res.scanned} scanned
             </Lozenge>
           </Inline>
-          <CycleTable
-            result={result}
-            statistic={cfg.statistic}
-            groupHeader={groupingLabel(dimension)}
-          />
-          <Text size="small" color="color.text.subtlest">
-            Wait = First Response SLA · Execution = Time to Resolution SLA ·
-            Total = ready → resolved. Durations are business-hours-aware.
-          </Text>
+
+          {metric === 'compliance' ? (
+            <>
+              <ComplianceTable result={result} groupHeader={groupingLabel(dimension)} />
+              <Text size="small" color="color.text.subtlest">
+                Met (green) vs breached (red) completed SLA cycles · First Response
+                + Time to Resolution. Counts each completed cycle, so a reopened
+                ticket's repeated SLA runs each count. Completed work only.
+              </Text>
+            </>
+          ) : (
+            <>
+              <CycleTable
+                result={result}
+                statistic={cfg.statistic}
+                groupHeader={groupingLabel(dimension)}
+              />
+              <Text size="small" color="color.text.subtlest">
+                Wait = First Response SLA · Execution = Time to Resolution SLA ·
+                Total = ready → resolved. Durations are business-hours-aware.
+              </Text>
+            </>
+          )}
         </Stack>
       )}
     </Stack>
@@ -246,13 +382,14 @@ const Edit = () => {
     // Select fields can hand back { label, value } objects; flatten to the value
     // string so the saved config stays simple flat strings.
     const flat = { ...data };
-    ['grouping', 'statistic'].forEach((k) => {
+    ['grouping', 'metric', 'statistic'].forEach((k) => {
       if (flat[k] && typeof flat[k] === 'object') flat[k] = flat[k].value;
     });
     view.submit(flat);
   };
 
   const groupOptions = GROUPINGS.map((g) => ({ label: g.label, value: g.key }));
+  const viewOptions = VIEWS.map((v) => ({ label: v.label, value: v.key }));
   const statOptions = STATISTICS.map((s) => ({ label: s.label, value: s.key }));
 
   // Window must be a positive integer when provided (blank = use filter as-is).
@@ -293,6 +430,14 @@ const Edit = () => {
       <FormSection>
         <Heading size="small">Display</Heading>
         <SelectField
+          name="metric"
+          label="Default view"
+          options={viewOptions}
+          register={register}
+          defaultValue={cfg.metric}
+          helper="Durations (Wait/Execution/Total) or SLA met vs breached. Viewers can switch it on the panel."
+        />
+        <SelectField
           name="grouping"
           label="Default grouping"
           options={groupOptions}
@@ -302,7 +447,7 @@ const Edit = () => {
         />
         <SelectField
           name="statistic"
-          label="Statistic"
+          label="Statistic (durations view)"
           options={statOptions}
           register={register}
           defaultValue={cfg.statistic}

@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { extractRecords, aggregate, median, average } from '../src/compute.js';
-import { formatDuration } from '../src/constants.js';
+import { formatDuration, formatRate, slaCycleStats } from '../src/constants.js';
 
 // Placeholder field ids — extractRecords reads whatever ids it's handed, so the
 // tests don't need (or hardcode) any particular site's custom-field numbers.
@@ -20,8 +20,13 @@ const FIELDS = {
 const MIN = 60 * 1000;
 const h = (hours, minutes = 0) => (hours * 60 + minutes) * MIN;
 
-// Build a search/jql-shaped issue with one completed cycle per SLA.
-const issue = (key, { wait, exec, assignee, priority, requestType }) => ({
+// Build a search/jql-shaped issue with one completed cycle per SLA. The optional
+// waitBreached/execBreached flags set the `breached` boolean on that cycle so the
+// compliance tests can exercise met vs breached counting.
+const issue = (
+  key,
+  { wait, exec, assignee, priority, requestType, waitBreached = false, execBreached = false },
+) => ({
   key,
   fields: {
     assignee: assignee
@@ -29,9 +34,13 @@ const issue = (key, { wait, exec, assignee, priority, requestType }) => ({
       : null,
     priority: priority ? { name: priority } : null,
     [FIELDS.waitSla]:
-      wait == null ? null : { completedCycles: [{ elapsedTime: { millis: wait } }] },
+      wait == null
+        ? null
+        : { completedCycles: [{ elapsedTime: { millis: wait }, breached: waitBreached }] },
     [FIELDS.execSla]:
-      exec == null ? null : { completedCycles: [{ elapsedTime: { millis: exec } }] },
+      exec == null
+        ? null
+        : { completedCycles: [{ elapsedTime: { millis: exec }, breached: execBreached }] },
     [FIELDS.requestType]: requestType ? { requestType: { name: requestType } } : null,
   },
 });
@@ -141,4 +150,107 @@ test('formatDuration floors to match Jira friendly labels (SAMPLE-1 raw millis)'
   // Raw elapsedTime.millis pulled live from the SLA fields on SAMPLE-1.
   assert.equal(formatDuration(11257171), '3h 7m'); // First Response SLA
   assert.equal(formatDuration(35004105), '9h 43m'); // Time to Resolution SLA
+});
+
+// --- SLA compliance (met vs breached) --------------------------------------
+
+test('slaCycleStats counts met vs breached per completed cycle', () => {
+  const field = {
+    completedCycles: [
+      { elapsedTime: { millis: h(1) }, breached: false },
+      { elapsedTime: { millis: h(2) }, breached: true },
+      { elapsedTime: { millis: h(3) }, breached: false },
+    ],
+  };
+  const s = slaCycleStats(field);
+  assert.equal(s.cycles, 3);
+  assert.equal(s.breached, 1);
+  assert.equal(s.met, 2);
+  assert.equal(s.millis, h(6)); // durations still sum across all cycles
+});
+
+test('slaCycleStats: missing field / no cycles → zeroed, not breached', () => {
+  assert.deepEqual(slaCycleStats(null), { millis: 0, cycles: 0, met: 0, breached: 0 });
+  assert.deepEqual(slaCycleStats({ completedCycles: [] }), {
+    millis: 0,
+    cycles: 0,
+    met: 0,
+    breached: 0,
+  });
+});
+
+test('extractRecords carries per-SLA met/breached counts', () => {
+  const recs = extractRecords(
+    [issue('C-1', { wait: h(1), exec: h(2), assignee: 'Ana', waitBreached: false, execBreached: true })],
+    FIELDS,
+  );
+  assert.equal(recs.length, 1);
+  assert.equal(recs[0].waitMet, 1);
+  assert.equal(recs[0].waitBreached, 0);
+  assert.equal(recs[0].execMet, 0);
+  assert.equal(recs[0].execBreached, 1);
+});
+
+test('reopened ticket: met/breached counted per cycle (not collapsed per issue)', () => {
+  // Execution SLA ran twice: once met, once breached → 1 met + 1 breached.
+  const reopened = {
+    key: 'C-2',
+    fields: {
+      assignee: { accountId: 'acc-Bo', displayName: 'Bo' },
+      [FIELDS.waitSla]: { completedCycles: [{ elapsedTime: { millis: h(1) }, breached: false }] },
+      [FIELDS.execSla]: {
+        completedCycles: [
+          { elapsedTime: { millis: h(2) }, breached: false },
+          { elapsedTime: { millis: h(3) }, breached: true },
+        ],
+      },
+    },
+  };
+  const recs = extractRecords([reopened], FIELDS);
+  assert.equal(recs[0].execMet, 1);
+  assert.equal(recs[0].execBreached, 1);
+});
+
+test('aggregate compliance: per-SLA met/breached sum + breach rate per group', () => {
+  const recs = extractRecords(
+    [
+      issue('A', { wait: h(1), exec: h(1), assignee: 'Ana', execBreached: true }),
+      issue('B', { wait: h(2), exec: h(2), assignee: 'Ana', execBreached: false }),
+      issue('C', { wait: h(1), exec: h(1), assignee: 'Ana', execBreached: false }),
+    ],
+    FIELDS,
+  );
+  const ana = aggregate(recs, 'assignee').rows[0].compliance;
+  // First Response: 3 cycles, none breached.
+  assert.equal(ana.firstResponse.cycles, 3);
+  assert.equal(ana.firstResponse.breached, 0);
+  assert.equal(ana.firstResponse.rate, 0);
+  // Time to Resolution: 3 cycles, 1 breached → rate 1/3.
+  assert.equal(ana.resolution.cycles, 3);
+  assert.equal(ana.resolution.breached, 1);
+  assert.equal(ana.resolution.met, 2);
+  assert.ok(Math.abs(ana.resolution.rate - 1 / 3) < 1e-9);
+});
+
+test('aggregate compliance: overall row spans every record', () => {
+  const recs = extractRecords(
+    [
+      issue('A', { wait: h(1), exec: h(1), assignee: 'Ana', execBreached: true }),
+      issue('B', { wait: h(2), exec: h(2), assignee: 'Bo', waitBreached: true }),
+    ],
+    FIELDS,
+  );
+  const overall = aggregate(recs, 'assignee').overall.compliance;
+  assert.equal(overall.firstResponse.breached, 1);
+  assert.equal(overall.resolution.breached, 1);
+  assert.equal(overall.firstResponse.cycles, 2);
+  assert.equal(overall.resolution.cycles, 2);
+});
+
+test('formatRate: percent string, dash when no cycles', () => {
+  assert.equal(formatRate(1, 3), '33%');
+  assert.equal(formatRate(0, 5), '0%');
+  assert.equal(formatRate(7, 7), '100%');
+  assert.equal(formatRate(0, 0), '—');
+  assert.equal(formatRate(3, 0), '—');
 });

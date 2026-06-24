@@ -30,6 +30,15 @@ export const STATISTICS = [
   { key: 'both', label: 'Median + Average' },
 ];
 
+// The metric a viewer can switch between on the panel (a live toggle, like the
+// grouping). `durations` is the original Wait/Execution/Total view; `compliance`
+// is the SLA met-vs-breached view (counts completed cycles by their breach flag).
+// Both are derived from the same fetched records — switching never re-fetches.
+export const VIEWS = [
+  { key: 'durations', label: 'Durations' },
+  { key: 'compliance', label: 'SLA met vs breached' },
+];
+
 // Native Jira priorities, heaviest → lightest. Used to order priority groups so
 // the table reads top-down by severity rather than alphabetically.
 export const PRIORITIES = ['Highest', 'High', 'Medium', 'Low', 'Lowest'];
@@ -39,7 +48,8 @@ export const PRIORITIES = ['Highest', 'High', 'Medium', 'Low', 'Lowest'];
  * before anyone opens the config form.
  *  - filterId:   blank → fall back to the CYCLE_TIME_FILTER_ID Forge variable.
  *  - grouping:   initial dimension; the viewer can still switch it live.
- *  - statistic:  which of median/average/both columns to render.
+ *  - metric:     initial view (durations | compliance); viewer can switch it live.
+ *  - statistic:  which of median/average/both columns to render (durations view).
  *  - windowDays: optional extra `resolved >= -Nd` clause AND-ed onto the source
  *                JQL. Blank → use the filter as-is (the source filter typically
  *                already constrains the window, e.g. resolved in the last 60d).
@@ -47,6 +57,7 @@ export const PRIORITIES = ['Highest', 'High', 'Medium', 'Low', 'Lowest'];
 export const DEFAULT_CONFIG = {
   filterId: '',
   grouping: 'assignee',
+  metric: 'durations',
   statistic: 'both',
   windowDays: '',
 };
@@ -86,6 +97,7 @@ export function normalizeConfig(raw = {}) {
   return {
     filterId: str(r.filterId, d.filterId),
     grouping: oneOf(r.grouping, GROUPINGS.map((g) => g.key), d.grouping),
+    metric: oneOf(r.metric, VIEWS.map((v) => v.key), d.metric),
     statistic: oneOf(r.statistic, STATISTICS.map((s) => s.key), d.statistic),
     windowDays: posIntOrBlank(r.windowDays, d.windowDays),
   };
@@ -101,6 +113,7 @@ export function defaultFlatConfig() {
   return {
     filterId: String(d.filterId),
     grouping: String(d.grouping),
+    metric: String(d.metric),
     statistic: String(d.statistic),
     windowDays: String(d.windowDays),
   };
@@ -118,20 +131,37 @@ export function requestTypeName(fieldValue) {
 }
 
 /**
- * Sum the elapsed business-time across a single SLA field's completed cycles.
- * Summing (rather than taking the last cycle) correctly handles reopened tickets
- * that ran the SLA more than once. Returns { millis, cycles } so callers can tell
- * "0 because it was instant" from "0 because it never completed a cycle".
+ * Reduce a single SLA field's completed cycles to the numbers both views need:
+ *  - millis:   summed elapsed business-time (durations view). Summing rather than
+ *              taking the last cycle correctly handles reopened tickets that ran
+ *              the SLA more than once.
+ *  - cycles:   completed-cycle count, so callers can tell "0 because it was
+ *              instant" from "0 because it never completed a cycle".
+ *  - met/breached: completed cycles counted by their `breached` flag (compliance
+ *              view). Counted per cycle — a reopened ticket whose SLA breached on
+ *              one run and met on another contributes to both. A cycle is breached
+ *              only when `breached === true`; anything else counts as met.
  */
-export function slaElapsedMillis(slaFieldValue) {
+export function slaCycleStats(slaFieldValue) {
   const cycles = (slaFieldValue && slaFieldValue.completedCycles) || [];
   let millis = 0;
+  let breached = 0;
   for (const c of cycles) {
     if (c && c.elapsedTime && Number.isFinite(c.elapsedTime.millis)) {
       millis += c.elapsedTime.millis;
     }
+    if (c && c.breached === true) breached += 1;
   }
-  return { millis, cycles: cycles.length };
+  return { millis, cycles: cycles.length, met: cycles.length - breached, breached };
+}
+
+/**
+ * Breach rate as a whole-percent string ("11%"). `total` is met + breached
+ * completed cycles for the SLA; 0 total → "—" (no data to rate, not "0%").
+ */
+export function formatRate(breached, total) {
+  if (!Number.isFinite(total) || total <= 0) return '—';
+  return `${Math.round((breached / total) * 100)}%`;
 }
 
 /**

@@ -16,7 +16,7 @@
 import {
   PRIORITIES,
   requestTypeName,
-  slaElapsedMillis,
+  slaCycleStats,
 } from './constants.js';
 
 // --- statistics ------------------------------------------------------------
@@ -57,8 +57,8 @@ export function extractRecords(issues, fieldIds) {
   for (const issue of issues) {
     const f = issue.fields || {};
 
-    const wait = slaElapsedMillis(f[waitSla]);
-    const exec = slaElapsedMillis(f[execSla]);
+    const wait = slaCycleStats(f[waitSla]);
+    const exec = slaCycleStats(f[execSla]);
 
     // Skip issues that never completed a cycle on either SLA — they have no
     // ready→resolved duration to report.
@@ -69,9 +69,15 @@ export function extractRecords(issues, fieldIds) {
 
     records.push({
       key: issue.key,
+      // Durations view: summed business-time per SLA + their total.
       wait: wait.millis,
       exec: exec.millis,
       total: wait.millis + exec.millis,
+      // Compliance view: completed cycles counted by breach flag, per SLA.
+      waitMet: wait.met,
+      waitBreached: wait.breached,
+      execMet: exec.met,
+      execBreached: exec.breached,
       // Grouping coordinates, pre-resolved so aggregate() stays dimension-agnostic.
       assigneeId: (assignee && assignee.accountId) || 'unassigned',
       assigneeName: (assignee && assignee.displayName) || 'Unassigned',
@@ -98,7 +104,21 @@ function groupOf(record, dimension) {
   }
 }
 
-// Build the median/average summary for one collection of records.
+// Sum one SLA's met/breached completed cycles across a group, with the breach
+// rate (breached / total). Drives the compliance view's bars + rate per SLA.
+function complianceOf(records, metKey, breachedKey) {
+  let met = 0;
+  let breached = 0;
+  for (const r of records) {
+    met += r[metKey] || 0;
+    breached += r[breachedKey] || 0;
+  }
+  const cycles = met + breached;
+  return { met, breached, cycles, rate: cycles ? breached / cycles : 0 };
+}
+
+// Build the per-group summary feeding BOTH views: median/average durations
+// (durations view) and per-SLA met/breached cycle counts (compliance view).
 function summarize(records) {
   const waits = records.map((r) => r.wait);
   const execs = records.map((r) => r.exec);
@@ -108,6 +128,12 @@ function summarize(records) {
     wait: { median: median(waits), average: average(waits) },
     exec: { median: median(execs), average: average(execs) },
     total: { median: median(totals), average: average(totals) },
+    compliance: {
+      // Vocabulary mirrors the durations view: First Response = Wait SLA,
+      // Time to Resolution = Execution SLA.
+      firstResponse: complianceOf(records, 'waitMet', 'waitBreached'),
+      resolution: complianceOf(records, 'execMet', 'execBreached'),
+    },
   };
 }
 

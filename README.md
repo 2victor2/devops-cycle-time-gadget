@@ -1,14 +1,19 @@
 # Cycle Time (SLA) — Jira Cloud dashboard gadget
 
 A custom **Atlassian Forge** dashboard gadget for Jira Cloud (Jira Service
-Management) that answers one question for a delivery team:
+Management) with two views over the same data, switchable live on the panel:
 
-> **How long does work take from _ready_ to _resolved_ — and how much of that is
-> waiting in a queue versus hands-on execution?**
+> **Durations** — How long does work take from _ready_ to _resolved_, and how
+> much of that is waiting in a queue versus hands-on execution?
+>
+> **SLA met vs breached** — What share of each SLA's completed cycles met their
+> goal versus breached it?
 
-It breaks each issue's cycle time into **Wait** and **Execution**, rolls them up
-per **assignee / priority / request type**, and reports the **median** (headline)
-and **average** of each. It reads two native JSM SLA fields, so there is **no
+Both roll up per **assignee / priority / request type**. The **Durations** view
+breaks each issue's cycle time into **Wait** and **Execution** and reports the
+**median** (headline) and **average**. The **SLA met vs breached** view counts
+completed SLA cycles by their breach flag and shows a met/breached bar plus the
+breach rate per SLA. Both read two native JSM SLA fields, so there is **no
 changelog parsing and no custom working-calendar math**.
 
 ---
@@ -55,6 +60,24 @@ Wait, Execution, and Total. A pinned **Team overall** row summarizes everything.
 > **Why median is the headline:** durations are right-skewed, so one slow ticket
 > drags the average but not the middle. The average is shown alongside for
 > context.
+
+### SLA met vs breached
+
+The same per-issue records also carry, for each SLA, how many completed cycles
+**met** their goal versus **breached** it (`completedCycles[].breached`). The
+compliance view sums these per group and renders, **per SLA** (First Response and
+Time to Resolution):
+
+- a proportional **met (green) / breached (red) bar** with the raw `met/total`
+  count, and
+- the **breach rate** (`breached / total`) as a coloured lozenge.
+
+Counting is **per completed cycle**, not per issue — a reopened ticket whose SLA
+ran more than once contributes each run, so a ticket that breached once and met
+once shows up as one of each. Rows default to **worst resolution breach rate
+first**; any column is sortable. The population is the same completed-work set as
+the Durations view (the source filter's resolved-in-window issues) — open or
+still-running SLAs are not counted.
 
 ---
 
@@ -104,9 +127,10 @@ and fill in:
 Find your custom-field ids under **Jira settings → Issues → Custom fields**, or
 via `GET /rest/api/3/field`.
 
-Each placed gadget also has an **edit form** for: source filter id, default
-grouping, statistic (median / average / both), and an optional window (in days)
-that tightens the query with `resolved >= -Nd`.
+Each placed gadget also has an **edit form** for: source filter id, default view
+(durations / SLA met vs breached), default grouping, statistic (median / average
+/ both, for the durations view), and an optional window (in days) that tightens
+the query with `resolved >= -Nd`.
 
 ---
 
