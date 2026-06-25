@@ -7,6 +7,7 @@ import ForgeReconciler, {
   Stack,
   Inline,
   Lozenge,
+  Link,
   Spinner,
   SectionMessage,
   DynamicTable,
@@ -32,6 +33,7 @@ import {
   normalizeConfig,
   formatDuration,
   formatRate,
+  breachLink,
 } from '../constants.js';
 import { aggregate } from '../compute.js';
 
@@ -162,17 +164,27 @@ const ComplianceBar = ({ stat }) => {
 };
 
 // Breach rate as a lozenge: success (green) when nothing breached, removed (red)
-// when any cycle breached; a muted dash when there were no cycles to rate.
-const RateLozenge = ({ stat }) => {
+// when any cycle breached; a muted dash when there were no cycles to rate. When a
+// drill-down `href` is supplied and there are breaches to look at, the lozenge
+// becomes a link to the matching issues (opens the Jira issue navigator).
+const RateLozenge = ({ stat, href }) => {
   if (!stat.cycles) return <Text color="color.text.subtlest">—</Text>;
-  return (
+  const lozenge = (
     <Lozenge appearance={stat.breached > 0 ? 'removed' : 'success'}>
       {formatRate(stat.breached, stat.cycles)}
     </Lozenge>
   );
+  if (href && stat.breached > 0) {
+    return (
+      <Link href={href} openNewTab>
+        {lozenge}
+      </Link>
+    );
+  }
+  return lozenge;
 };
 
-const ComplianceTable = ({ result, groupHeader }) => {
+const ComplianceTable = ({ result, groupHeader, linkCtx }) => {
   const head = {
     cells: [
       { key: 'label', content: groupHeader, isSortable: true },
@@ -190,14 +202,18 @@ const ComplianceTable = ({ result, groupHeader }) => {
     const fr = r.compliance.firstResponse;
     const ttr = r.compliance.resolution;
     const label = bold ? <Strong>{r.label}</Strong> : r.label;
+    // Per-cell drill-down to the matching breached issues. Returns null (plain
+    // lozenge) for the request-type dimension or when no base URL is available.
+    const frHref = breachLink({ ...linkCtx, row: r, slaFieldId: linkCtx.slaFields.firstResponse });
+    const ttrHref = breachLink({ ...linkCtx, row: r, slaFieldId: linkCtx.slaFields.resolution });
     return {
       key: r.key,
       cells: [
         { key: r.label, content: label },
         { key: fr.rate, content: <ComplianceBar stat={fr} /> },
-        { key: fr.rate, content: <RateLozenge stat={fr} /> },
+        { key: fr.rate, content: <RateLozenge stat={fr} href={frHref} /> },
         { key: ttr.rate, content: <ComplianceBar stat={ttr} /> },
-        { key: ttr.rate, content: <RateLozenge stat={ttr} /> },
+        { key: ttr.rate, content: <RateLozenge stat={ttr} href={ttrHref} /> },
       ],
     };
   };
@@ -326,11 +342,21 @@ const View = () => {
 
           {metric === 'compliance' ? (
             <>
-              <ComplianceTable result={result} groupHeader={groupingLabel(dimension)} />
+              <ComplianceTable
+                result={result}
+                groupHeader={groupingLabel(dimension)}
+                linkCtx={{
+                  baseUrl: res.baseUrl,
+                  jql: res.jql,
+                  slaFields: res.slaFields,
+                  dimension,
+                }}
+              />
               <Text size="small" color="color.text.subtlest">
                 Met (green) vs breached (red) completed SLA cycles · First Response
                 + Time to Resolution. Counts each completed cycle, so a reopened
-                ticket's repeated SLA runs each count. Completed work only.
+                ticket's repeated SLA runs each count. Completed work only. Click a
+                red breach % (by assignee or priority) to open those issues in Jira.
               </Text>
             </>
           ) : (

@@ -7,7 +7,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { extractRecords, aggregate, median, average } from '../src/compute.js';
-import { formatDuration, formatRate, slaCycleStats } from '../src/constants.js';
+import {
+  formatDuration,
+  formatRate,
+  slaCycleStats,
+  breachedClause,
+  dimensionClause,
+  breachLink,
+} from '../src/constants.js';
 
 // Placeholder field ids — extractRecords reads whatever ids it's handed, so the
 // tests don't need (or hardcode) any particular site's custom-field numbers.
@@ -253,4 +260,79 @@ test('formatRate: percent string, dash when no cycles', () => {
   assert.equal(formatRate(7, 7), '100%');
   assert.equal(formatRate(0, 0), '—');
   assert.equal(formatRate(3, 0), '—');
+});
+
+// --- breach drill-down links -----------------------------------------------
+
+test('breachedClause: completed() AND everBreached() on the cf[id] field', () => {
+  // Verified live to match the panel's completed-cycle breached count.
+  assert.equal(
+    breachedClause('customfield_10579'),
+    'cf[10579] = completed() AND cf[10579] = everBreached()',
+  );
+  assert.equal(breachedClause(''), ''); // unconfigured → no clause
+});
+
+test('dimensionClause: assignee/priority linkable, request type not', () => {
+  const ana = { key: 'acc-1', label: 'Ana' };
+  assert.equal(dimensionClause('assignee', ana), 'assignee = "acc-1"');
+  assert.equal(
+    dimensionClause('assignee', { key: 'unassigned', label: 'Unassigned' }),
+    'assignee IS EMPTY',
+  );
+  assert.equal(dimensionClause('priority', { key: 'High', label: 'High' }), 'priority = "High"');
+  assert.equal(
+    dimensionClause('priority', { key: 'No priority', label: 'No priority' }),
+    'priority IS EMPTY',
+  );
+  // Overall row → empty clause (linkable, no group filter).
+  assert.equal(dimensionClause('assignee', { key: '__overall__', label: 'Team overall' }), '');
+  // Request type can't be matched by display name in JQL → not linkable.
+  assert.equal(dimensionClause('requestType', { key: 'Bug', label: 'Bug' }), null);
+});
+
+test('breachLink: builds an encoded navigator URL, strips ORDER BY', () => {
+  const url = breachLink({
+    baseUrl: 'https://x.atlassian.net',
+    jql: 'project = DEVOPS AND resolution = Done ORDER BY resolved DESC',
+    dimension: 'assignee',
+    row: { key: 'acc-1', label: 'Ana' },
+    slaFieldId: 'customfield_10579',
+  });
+  assert.ok(url.startsWith('https://x.atlassian.net/issues/?jql='));
+  const jql = decodeURIComponent(url.split('jql=')[1]);
+  assert.equal(
+    jql,
+    '(project = DEVOPS AND resolution = Done) AND assignee = "acc-1" ' +
+      'AND cf[10579] = completed() AND cf[10579] = everBreached() ORDER BY resolved DESC',
+  );
+});
+
+test('breachLink: overall row omits the group clause', () => {
+  const url = breachLink({
+    baseUrl: 'https://x.atlassian.net',
+    jql: 'project = DEVOPS',
+    dimension: 'assignee',
+    row: { key: '__overall__', label: 'Team overall' },
+    slaFieldId: 'customfield_10580',
+  });
+  const jql = decodeURIComponent(url.split('jql=')[1]);
+  assert.equal(
+    jql,
+    '(project = DEVOPS) AND cf[10580] = completed() AND cf[10580] = everBreached() ORDER BY resolved DESC',
+  );
+});
+
+test('breachLink: null when not linkable (request type, no base URL, no field)', () => {
+  const ctx = {
+    baseUrl: 'https://x.atlassian.net',
+    jql: 'project = DEVOPS',
+    dimension: 'assignee',
+    row: { key: 'acc-1', label: 'Ana' },
+    slaFieldId: 'customfield_10579',
+  };
+  assert.equal(breachLink({ ...ctx, dimension: 'requestType', row: { key: 'Bug', label: 'Bug' } }), null);
+  assert.equal(breachLink({ ...ctx, baseUrl: '' }), null);
+  assert.equal(breachLink({ ...ctx, slaFieldId: '' }), null);
+  assert.equal(breachLink({ ...ctx, jql: '' }), null);
 });

@@ -70,6 +70,27 @@ function applyWindow(jql, windowDays) {
 }
 
 /**
+ * The Jira site base URL (e.g. https://acme.atlassian.net), used to build
+ * absolute issue-navigator links for the compliance view's breach-rate cells.
+ * Best-effort: on failure we return '' and the frontend just renders the rate as
+ * plain text (no link), so the panel never breaks over this.
+ */
+async function fetchBaseUrl() {
+  try {
+    const res = await api
+      .asApp()
+      .requestJira(route`/rest/api/3/serverInfo`, { headers: { Accept: 'application/json' } });
+    if (res.ok) {
+      const data = await res.json();
+      return data.baseUrl || '';
+    }
+  } catch (e) {
+    // fall through to ''
+  }
+  return '';
+}
+
+/**
  * Page through POST /rest/api/3/search/jql with nextPageToken until exhausted.
  * The resolved-last-60d set is modest, but we paginate properly per the spec.
  */
@@ -140,13 +161,23 @@ resolver.define('getCycleTime', async (req) => {
       };
     }
     const jql = applyWindow(baseJql, cfg.windowDays);
-    const issues = await fetchAllIssues(jql);
+    // baseUrl is independent of the issue fetch, so run them together.
+    const [issues, baseUrl] = await Promise.all([fetchAllIssues(jql), fetchBaseUrl()]);
     const records = extractRecords(issues, {
       waitSla: WAIT_SLA_FIELD,
       execSla: EXEC_SLA_FIELD,
       requestType: REQUEST_TYPE_FIELD,
     });
-    return { ok: true, records, scanned: issues.length };
+    // jql + baseUrl + the SLA field ids let the frontend build drill-down links
+    // from the compliance view's breach-rate cells to the matching issues.
+    return {
+      ok: true,
+      records,
+      scanned: issues.length,
+      jql,
+      baseUrl,
+      slaFields: { firstResponse: WAIT_SLA_FIELD, resolution: EXEC_SLA_FIELD },
+    };
   } catch (err) {
     console.error('getCycleTime failed', err);
     return { ok: false, error: String(err.message || err) };

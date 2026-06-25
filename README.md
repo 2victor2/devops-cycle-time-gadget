@@ -79,6 +79,14 @@ first**; any column is sortable. The population is the same completed-work set a
 the Durations view (the source filter's resolved-in-window issues) — open or
 still-running SLAs are not counted.
 
+**Drill-down:** a red breach-rate cell links to the Jira issue navigator showing
+exactly those breached issues — the source filter, narrowed to that group, with
+`cf[<sla>] = completed() AND cf[<sla>] = everBreached()`. That clause matches the
+panel's count (it excludes still-running / never-responded breaches that a bare
+`breached()` would include). Linking is enabled for the **assignee** and
+**priority** groupings and the Team-overall row; the request-type grouping renders
+plain rates, because JSM request types aren't matchable by display name in JQL.
+
 ---
 
 ## Architecture

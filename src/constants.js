@@ -164,6 +164,78 @@ export function formatRate(breached, total) {
   return `${Math.round((breached / total) * 100)}%`;
 }
 
+// --- breach drill-down links -----------------------------------------------
+// The compliance view's breach-rate cells link to the Jira issue navigator
+// showing exactly the issues behind that number. The clauses below were verified
+// against live data so the link's result count matches the panel's breached
+// count. Helpers are pure (no Forge/network) so they're unit-tested offline.
+
+// "customfield_10580" → "10580" for the cf[NNNNN] JQL clause form. Using the
+// numeric field id (already configured per site) keeps the JQL site-agnostic —
+// no dependency on the human SLA name, which varies by instance/language.
+function cfNum(fieldId) {
+  const m = /(\d+)/.exec(String(fieldId || ''));
+  return m ? m[1] : '';
+}
+
+// Strip a trailing `ORDER BY …` so the source JQL can be wrapped in parens and
+// AND-ed with extra clauses without producing invalid JQL.
+function stripOrderBy(jql) {
+  return String(jql || '').replace(/\s+ORDER\s+BY\s+[\s\S]*$/i, '').trim();
+}
+
+/**
+ * JQL selecting an SLA's COMPLETED cycles that breached — the panel's exact
+ * "breached" definition. `breached()` alone also matches still-running/
+ * never-responded breaches (e.g. resolved issues that never got a first
+ * response), which the panel skips; intersecting with `completed()` excludes
+ * those, so the link count equals the bar. Verified live: FR & TTR both tie out.
+ */
+export function breachedClause(slaFieldId) {
+  const n = cfNum(slaFieldId);
+  return n ? `cf[${n}] = completed() AND cf[${n}] = everBreached()` : '';
+}
+
+/**
+ * JQL clause that narrows to one group row, or:
+ *  - ''   → the Team-overall row (no group filter, just the SLA breach clause).
+ *  - null → not linkable for this dimension (request type can't be matched by
+ *           display name in JQL), so the caller renders a plain (non-link) cell.
+ * Assignee groups on the stable accountId; priority on its name.
+ */
+export function dimensionClause(dimension, row) {
+  if (!row) return null;
+  if (row.key === '__overall__') return '';
+  switch (dimension) {
+    case 'assignee':
+      return row.key === 'unassigned' ? 'assignee IS EMPTY' : `assignee = "${row.key}"`;
+    case 'priority':
+      return row.label === 'No priority'
+        ? 'priority IS EMPTY'
+        : `priority = "${String(row.label).replace(/"/g, '\\"')}"`;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Build the issue-navigator URL for one breach-rate cell, or null when it can't
+ * be linked (request-type dimension, missing base URL/JQL, or unconfigured SLA
+ * field). Shape: (sourceJQL) AND <group> AND <SLA completed+breached> ORDER BY.
+ */
+export function breachLink({ baseUrl, jql, dimension, row, slaFieldId }) {
+  const dim = dimensionClause(dimension, row);
+  const breached = breachedClause(slaFieldId);
+  const base = stripOrderBy(jql);
+  if (dim === null || !baseUrl || !base || !breached) return null;
+
+  const parts = [`(${base})`];
+  if (dim) parts.push(dim);
+  parts.push(breached);
+  const full = `${parts.join(' AND ')} ORDER BY resolved DESC`;
+  return `${baseUrl}/issues/?jql=${encodeURIComponent(full)}`;
+}
+
 /**
  * Render a duration in milliseconds as a compact human string ("3h 7m").
  * SLA elapsed time is already business-hours-aware, so these read as working
